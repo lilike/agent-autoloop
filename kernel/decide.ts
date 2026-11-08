@@ -321,7 +321,10 @@ function claimNext(draft: Draft, worker: string, claim: string) {
     claimed.filter((other) => other.grp === run.grp).length < groupLimit(run.grp);
   // The same claim again means the answer got lost: it gets back the run it already has.
   const held = claimed.find((run) => run.claim === claim && workerOf(draft.view, run) === worker);
-  const run = held ?? runs.find(claimable);
+  // A rule's priority goes first; within the same priority, the earliest queued.
+  const priority = (run: Row) => ruleNamed(draft, run.rule)?.priority ?? 0;
+  const first = (best: Row | undefined, run: Row) => (best && priority(best) >= priority(run) ? best : run);
+  const run = held ?? runs.filter(claimable).reduce<Row | undefined>(first, undefined);
   if (!run) return null;
   if (!held) {
     assignQueued(draft, run);

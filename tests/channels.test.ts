@@ -49,7 +49,11 @@ test("a card shows its options while it's open, and what became of it after", ()
   assert.match(said({ ...base, state: "decided", choice: 1 }), /你选了「留着」，已记录/);
   assert.ok(!said({ ...base, state: "decided", choice: 1 }).includes("callback"));
   assert.match(said({ ...base, state: "done", choice: 0, result: "删了" }), /你选了「删」。已执行：删了/);
-  assert.match(said({ ...base, state: "decided", answer: "归档" }), /你选了「归档」/);
+  assert.match(said({ ...base, state: "decided", answer: "归档" }), /你的意见：「归档」，已记录/);
+  const askOpen = JSON.stringify(open.body.elements);
+  assert.ok(askOpen.includes("own_answer_submit_5"), "an ask has a box for your own words, its button naming the card");
+  assert.ok(askOpen.includes('"name":"text"'), "the box's words come back under text");
+  assert.ok(!said({ ...base, state: "decided", answer: "归档" }).includes("own_answer"), "a settled ask has no box");
   assert.match(said({ ...base, state: "closed", result: "问题自己好了" }), /不用决定了：问题自己好了/);
   assert.match(said({ ...base, kind: "notice", state: "closed", options: [], result: "已处理" }), /已处理/);
   const noticeOpen = JSON.stringify(render({ ...base, kind: "notice", options: [] }).body.elements);
@@ -297,6 +301,52 @@ esac
       ["answer", 7, { choice: 0, by: "ou_me", ref: "om_7" }],
     ],
     "a submitted note and a plain click both count, the click with no empty text",
+  );
+});
+
+test("feishu: an ask's own-words box answers with the words alone, and an empty box is ignored", async () => {
+  const log = join(dir, "lark-own.log");
+  const lark = join(dir, "lark-cli-own");
+  writeFileSync(
+    lark,
+    `#!/bin/sh
+echo "$*" >> "${log}"
+case "$*" in
+  *"event consume"*)
+    echo '{"action_name":"own_answer_submit_8","action_tag":"button","action_value":"","form_value":"{\\"text\\":\\"  用原版当参考，只开 2.5 和 MiniMax  \\"}","operator_id":"ou_me","message_id":"om_8"}'
+    echo '{"action_name":"own_answer_submit_8","action_tag":"button","action_value":"","form_value":"{\\"text\\":\\"   \\"}","operator_id":"ou_me","message_id":"om_8"}'
+    exec sleep 30 ;;
+  *) cat > /dev/null; echo '{"ok":true,"data":{"message_id":"om_8"}}' ;;
+esac
+`,
+  );
+  chmodSync(lark, 0o755);
+  const stop = new AbortController();
+  const cards: (Card | null)[] = [{ ...base, id: 8, ref: "om_8" }];
+  const calls: unknown[][] = [];
+  const hub = {
+    async nextCard() {
+      if (cards.length) return { card: cards.shift()! };
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      stop.abort();
+      return { card: null };
+    },
+    async delivered() {
+      return {};
+    },
+    async failed() {
+      return {};
+    },
+    async answer(...args: unknown[]) {
+      calls.push(["answer", ...args]);
+      return { changed: true };
+    },
+  };
+  await feishu({ hub: hub as any, options: { user: "ou_me", lark }, log: () => {}, signal: stop.signal });
+  assert.deepEqual(
+    calls.filter((c) => c[0] === "answer"),
+    [["answer", 8, { by: "ou_me", ref: "om_8", text: "用原版当参考，只开 2.5 和 MiniMax" }]],
+    "no option is picked, and a blank box sends nothing",
   );
 });
 

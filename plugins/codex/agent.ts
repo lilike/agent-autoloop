@@ -66,6 +66,8 @@ export default {
       else if (event.type === "item.completed" && event.item?.type === "agent_message") seen.text = event.item.text;
       else if (event.type === "turn.completed") {
         seen.completed = seen.finished = true;
+        // A mid-turn "Reconnecting..." it got past isn't why the turn ended: the answer decides.
+        delete seen.error;
         const { input_tokens = 0, output_tokens = 0, cached_input_tokens = 0 } = event.usage ?? {};
         seen.sessionUsage = { input: input_tokens, output: output_tokens, cached: cached_input_tokens };
       } else if (event.type === "turn.failed") {

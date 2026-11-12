@@ -317,6 +317,13 @@ test("Codex: only a finished turn's last message is its answer", () => {
     finished: true,
     error: "额度用完了",
   });
+  const reconnecting = { type: "error", message: "Reconnecting... 3/5 (stream disconnected before completion: tls handshake eof)" };
+  assert.deepEqual(
+    codex.read(lines(started, reconnecting, said("好了"), ended), 0, ""),
+    { session: "t", text: "好了", finished: true, sessionUsage: { input: 9, output: 1, cached: 3 } },
+    "a reconnect it got past isn't the result",
+  );
+  assert.equal(codex.read(lines(started, reconnecting), 1, "").error, reconnecting.message, "one it didn't is");
   assert.equal(codex.read("", 1, "cannot resume: active writer").error, "cannot resume: active writer");
   assert.equal(codex.link!("t"), "codex://threads/t");
 });

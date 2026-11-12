@@ -117,6 +117,7 @@ export function cardView(card: Row, env: Environment, ref: string | null = null,
     result,
     link,
     rule: card.rule,
+    lane: card.lane ?? null,
     ...when,
   };
 }

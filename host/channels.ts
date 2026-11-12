@@ -18,6 +18,8 @@ export type Card = {
   result: string | null;
   link: string | null;
   rule?: string;
+  // Which thing the card is about (a page, a site, a repo), so a channel can say where it came from.
+  lane?: string | null;
 };
 export type ChannelContext = {
   hub: Pick<Hub, "nextCard" | "delivered" | "failed" | "answer">;

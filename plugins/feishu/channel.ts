@@ -28,6 +28,15 @@ function outcomeOf(card: Card) {
 }
 
 /** One card, as it looks now: the options while it's open, what became of it after. */
+// The first line of every card says which task asked and what it is about, so a card never arrives
+// without context: "来自「按打回意见修改（Codex）」· genjutsu-ai.app 的 thanksgiving-dance-ai 页".
+function origin(card: Card) {
+  const lane = card.lane?.trim();
+  const page = lane && /^([^@\s/]+)@([^@\s/]+\.[a-z]{2,})$/i.exec(lane);
+  const about = page ? `${page[2]} 的 ${page[1]} 页` : lane ? lane.replace(/^.*\/(?=[^/]+$)/, "") : "";
+  return card.rule ? `来自「${card.rule}」${about ? ` · ${about}` : ""}` : about;
+}
+
 export function render(card: Card) {
   const outcome = outcomeOf(card);
   // Each option is a block across the card, its words wrapping: buttons in a row, one line high, cut long options off.
@@ -115,6 +124,7 @@ export function render(card: Card) {
     },
     body: {
       elements: [
+        ...(origin(card) ? [{ tag: "markdown", content: `<font color='grey'>${origin(card)}</font>` }] : []),
         ...(card.text ? [{ tag: "markdown", content: card.text }] : []),
         ...(card.state === "open"
           ? [...noteForm, ...card.options.map(option), ...ownWords]

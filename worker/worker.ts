@@ -213,6 +213,21 @@ export function createWorker({
       }
     });
 
+  /** 事件可以给这一轮另指定模型和推理强度（本 fork 2026-11-12 加）：detail 是 JSON、带 run_model / run_effort 时用它们，
+   *  不带就用 Agent 配置里的。多个事件取最后一个带的；只认像型号名的字符串（素材库按词选的，kw-dev/watch.mjs 放进去） */
+  function runChoice(job: Job) {
+    const name = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+    let model: string | undefined, effort: string | undefined;
+    for (const event of job.context.events) {
+      try {
+        const detail = JSON.parse(event.detail);
+        if (typeof detail?.run_model === "string" && name.test(detail.run_model)) model = detail.run_model;
+        if (typeof detail?.run_effort === "string" && name.test(detail.run_effort)) effort = detail.run_effort;
+      } catch {}
+    }
+    return { model, effort };
+  }
+
   /** Starts a turn of the agent: a process that outlives this one, leaving its output and exit code in files. */
   function launch(entry: Entry, adapter: Adapter, prompt: string) {
     entry.turn += 1;
@@ -230,8 +245,8 @@ export function createWorker({
       session: entry.session,
       resume: entry.resume,
       cwd,
-      model: agent.model,
-      effort: agent.effort,
+      model: runChoice(entry.job).model ?? agent.model,
+      effort: runChoice(entry.job).effort ?? agent.effort,
       access: agent.access as Turn["access"],
       command: agent.command,
       program: agent.program,

@@ -251,6 +251,22 @@ test("a job runs in its rule's folder with the prompt and context file, and with
   assert.equal(w.entries().length, 0, "handed in and let go");
 });
 
+// 本 fork（2026-11-12）：事件 detail 里的 run_model / run_effort 给这一轮另指定模型和推理强度，不带的用 Agent 配置；不像型号名的不认。
+test("an event's run_model and run_effort pick this run's model and effort over the agent's", async () => {
+  const hub = fakeHub();
+  const picked = job({ command: ["/bin/sh", "-c", 'echo "$1 $2"', "sh", "{model}", "{effort}"] });
+  Object.assign(picked.agent, { model: "m-default", effort: "e-default" });
+  picked.context.events[0].detail = JSON.stringify({ kind: "start", run_model: "gpt-6.1-terra", run_effort: "max" });
+  const plain = job({ command: ["/bin/sh", "-c", 'echo "$1 $2"', "sh", "{model}", "{effort}"] });
+  Object.assign(plain.agent, { model: "m-default", effort: "e-default" });
+  plain.context.events[0].detail = JSON.stringify({ run_model: "x; rm -rf /", run_effort: "" });
+  hub.jobs.push(picked, plain);
+  const w = worker(hub);
+  await until(w, () => hub.results.length === 2);
+  assert.equal(resultOf(hub, picked).summary, "gpt-6.1-terra max");
+  assert.equal(resultOf(hub, plain).summary, "m-default e-default");
+});
+
 test("a bad exit code, or no last message, is a failure saying why", async () => {
   const hub = fakeHub();
   const bad = job({ command: ["/bin/sh", "-c", "echo boom >&2; exit 3"] });

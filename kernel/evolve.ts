@@ -22,7 +22,15 @@ export type Match = Record<string, SQLInputValue | SQLInputValue[] | { not: null
 const NUMBERED = new Set<Table>(["events", "runs", "cards", "timers"]);
 const indexes: Partial<Record<Table, string[][]>> = {
   events: [["source", "key"], ["routed", "id"], ["paused", "id"], ["id"]],
-  runs: [["state", "id"], ["rule", "lane", "state", "id"], ["id"], ["finished_at"]],
+  runs: [
+    ["state", "id"],
+    ["rule", "lane", "state", "id"],
+    ["id"],
+    ["finished_at"],
+    // Cover what host/state.ts adds up over every run, so a status call needn't parse each run's JSON.
+    ["rule", "agent", "state", "attempts", "finished_at", "usage"],
+    ["finished_at", "claimed_at", "usage"],
+  ],
   run_events: [["run_id"], ["event_id"]],
   cards: [
     ["key", "id"],

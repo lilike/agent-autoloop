@@ -82,7 +82,7 @@ export type WorkerOptions = {
   now?: () => number;
 };
 
-function save(entry: Entry) {
+function saveEntry(entry: Entry) {
   const file = path.join(entry.dir, "entry.json");
   writeFileSync(`${file}.tmp`, JSON.stringify(entry), { mode: 0o600 });
   renameSync(`${file}.tmp`, file);
@@ -204,11 +204,23 @@ export function createWorker({
   };
   mkdirSync(RUNS, { recursive: true, mode: 0o700 });
 
+  /** Run folders this worker found without an entry: finished, and kept only for looking into. Thousands pile up over the
+   *  days they are kept, and reading each one again every round held up the hub sharing this process. Only this worker's
+   *  save gives one of them an entry again, and it takes the folder off; one left by an earlier process is read afresh. */
+  const ended = new Set<string>();
+  const save = (entry: Entry) => {
+    ended.delete(entry.dir);
+    saveEntry(entry);
+  };
+
   const entries = () =>
     readdirSync(RUNS).flatMap((id) => {
+      const dir = path.join(RUNS, id);
+      if (ended.has(dir)) return [];
       try {
-        return [JSON.parse(readFileSync(path.join(RUNS, id, "entry.json"), "utf8")) as Entry];
-      } catch {
+        return [JSON.parse(readFileSync(path.join(dir, "entry.json"), "utf8")) as Entry];
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") ended.add(dir);
         return [];
       }
     });
@@ -624,7 +636,10 @@ export function createWorker({
       const dir = path.join(RUNS, id);
       try {
         const expired = moment - statSync(dir).mtimeMs > KEEP_DAYS * 24 * 3600_000;
-        if (!existsSync(path.join(dir, "entry.json")) && expired) rmSync(dir, { recursive: true, force: true });
+        if (!existsSync(path.join(dir, "entry.json")) && expired) {
+          rmSync(dir, { recursive: true, force: true });
+          ended.delete(dir);
+        }
       } catch (error) {
         sayOnce(`couldn't clear ${dir}: ${error}`);
       }

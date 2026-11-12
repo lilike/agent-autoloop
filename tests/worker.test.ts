@@ -267,6 +267,24 @@ test("an event's run_model and run_effort pick this run's model and effort over 
   assert.equal(resultOf(hub, plain).summary, "m-default e-default");
 });
 
+test("rule-models.json picks a rule's model and effort, and an event's run_model still comes first", async () => {
+  const hub = fakeHub();
+  writeFileSync(join(home, "rule-models.json"), JSON.stringify({ 按任务选: { model: "gpt-6-astra", effort: "high" } }));
+  const byRule = job({ command: ["/bin/sh", "-c", 'echo "$1 $2"', "sh", "{model}", "{effort}"] });
+  Object.assign(byRule.agent, { model: "m-default", effort: "e-default" });
+  byRule.rule.name = "按任务选";
+  const both = job({ command: ["/bin/sh", "-c", 'echo "$1 $2"', "sh", "{model}", "{effort}"] });
+  Object.assign(both.agent, { model: "m-default", effort: "e-default" });
+  both.rule.name = "按任务选";
+  both.context.events[0].detail = JSON.stringify({ run_model: "claude-opus-5-5" });
+  hub.jobs.push(byRule, both);
+  const w = worker(hub);
+  await until(w, () => hub.results.length === 2);
+  rmSync(join(home, "rule-models.json"));
+  assert.equal(resultOf(hub, byRule).summary, "gpt-6-astra high");
+  assert.equal(resultOf(hub, both).summary, "claude-opus-5-5 high");
+});
+
 test("a bad exit code, or no last message, is a failure saying why", async () => {
   const hub = fakeHub();
   const bad = job({ command: ["/bin/sh", "-c", "echo boom >&2; exit 3"] });

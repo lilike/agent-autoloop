@@ -213,11 +213,19 @@ export function createWorker({
       }
     });
 
-  /** 事件可以给这一轮另指定模型和推理强度（本 fork 2026-11-12 加）：detail 是 JSON、带 run_model / run_effort 时用它们，
-   *  不带就用 Agent 配置里的。多个事件取最后一个带的；只认像型号名的字符串（素材库按词选的，kw-dev/watch.mjs 放进去） */
+  /** 这一轮用的模型和推理强度（本 fork 2026-11-12 加），先到先得：
+   *  1. 事件 detail（JSON）里的 run_model / run_effort：素材库按词选的，kw-dev/watch.mjs 放进去；多个事件取最后一个带的
+   *  2. HOME/rule-models.json 里这条规则的 { model, effort }：Agent 自动任务页按任务选的，每次启动现读
+   *  3. Agent 配置里的
+   *  只认像型号名的字符串 */
   function runChoice(job: Job) {
     const name = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
     let model: string | undefined, effort: string | undefined;
+    try {
+      const rule = JSON.parse(readFileSync(path.join(HOME, "rule-models.json"), "utf8"))?.[job.rule.name];
+      if (typeof rule?.model === "string" && name.test(rule.model)) model = rule.model;
+      if (typeof rule?.effort === "string" && name.test(rule.effort)) effort = rule.effort;
+    } catch {}
     for (const event of job.context.events) {
       try {
         const detail = JSON.parse(event.detail);
@@ -240,13 +248,14 @@ export function createWorker({
     save(entry);
     const { rule, agent } = entry.job;
     const cwd = rule.cwd.replace(/^~(?=[/\\])/, homedir());
+    const choice = runChoice(entry.job);
     const turn: Turn = {
       prompt,
       session: entry.session,
       resume: entry.resume,
       cwd,
-      model: runChoice(entry.job).model ?? agent.model,
-      effort: runChoice(entry.job).effort ?? agent.effort,
+      model: choice.model ?? agent.model,
+      effort: choice.effort ?? agent.effort,
       access: agent.access as Turn["access"],
       command: agent.command,
       program: agent.program,

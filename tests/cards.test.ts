@@ -20,6 +20,8 @@
 // Receipt FYIs must arrive closed without buttons, stay out of later open lists, and never wake work when clicked;
 // ordinary notices, questions, quiet rules, and the one-day FYI delivery window must keep their existing behavior.
 // The why timeline must show receipt FYIs without adding empty closures or repeating hub-generated end notices.
+// A text reply to a task notice must reach its continuation with the original event and survive a retry; acknowledging
+// a notice without words still only closes it, and old open failure notices must work without rewriting stored facts.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { at, setup } from "./helpers.ts";
@@ -29,7 +31,8 @@ import { formatWhy } from "../cli/why.ts";
 setup("cards");
 const { ingest } = await import("./hub.ts");
 const { cancel, claimNext, execute, finish, heartbeat, started, sweep, why } = await import("./hub.ts");
-const { answer, resolve, nextCard, delivered, failed, tell, cardByToken, getView } = await import("./hub.ts");
+const { answer, resolve, nextCard, delivered, failed, tell, cardByToken, getView, createCard } =
+  await import("./hub.ts");
 const { AuthError, InputError, NotFound } = await import("../kernel/errors.ts");
 const { all, one, run } = await import("./storage.ts");
 
@@ -514,6 +517,176 @@ test("a notice's handling note must be words, and one that isn't changes nothing
   const { id } = one<{ id: number }>("SELECT id FROM cards")!;
   assert.throws(() => answer(id, { text: 42 } as any, at(1)), InputError);
   assert.equal(card(id).state, "open");
+});
+
+for (const phase of ["retrying", "running", "stopped"] as const) {
+  test(`a text reply to a ${phase} task's failure notice carries the decision and original work exactly once`, () => {
+    clean();
+    const detail = JSON.stringify({ worktree: "/work/hey-boo", review: 670, repo: "/work/repo" });
+    ingest("app", { ...note(1), detail, link: "https://example.test/reviews/670" }, at(0));
+    let job = claim("w1", at(0))!;
+    started(job.run, job.token, { session: "hey-boo-session" }, at(0));
+    const count = phase === "stopped" ? 10 : 3;
+    for (let i = 0; i < count; i++) {
+      if (i) job = claim("w1", at(i * 65))!;
+      finish(job.run, job.token, { outcome: "failed", error: "还缺第三条案例" }, at(i * 65));
+    }
+    const originalRun = job.run;
+    const id = one<{ id: number }>("SELECT id FROM cards WHERE key = ?", [
+      `run:${originalRun}:${phase === "stopped" ? "stopped" : "failing"}`,
+    ])!.id;
+    let now = (count - 1) * 65 + 1;
+    if (phase === "running") {
+      now = count * 65;
+      job = claim("w1", at(now))!;
+    }
+    const text = "不需要三条，1条就可以，直接使用原片";
+    assert.deepEqual(answer(id, { choice: 0, text, by: "me" }, at(now)), { changed: true, state: "decided" });
+    assert.equal(answer(id, { text: "重复回调" }, at(now)).changed, false);
+    assert.equal(all("SELECT id FROM events WHERE type = 'card.answered'").length, 1);
+    assert.equal(card(id).choice, null, "the acknowledgement button isn't an answer option");
+    if (phase === "running") {
+      assert.equal(claim("w1", at(now)), null, "the new instruction must not start a second process on the thread");
+      finish(job.run, job.token, { outcome: "failed", error: "这轮未收到新意见" }, at(now));
+    }
+    job = claim("w1", at(now + 65))!;
+    assert.equal(job.session, "hey-boo-session");
+    assert.deepEqual(
+      job.context.events.map((event) => [event.type, event.source, event.subject]),
+      [
+        ["feedback.new", "app", "#1"],
+        ["card.answered", "app", "#1"],
+      ],
+    );
+    assert.equal(job.context.events[0].detail, detail);
+    assert.equal(job.context.events[0].link, "https://example.test/reviews/670");
+    assert.deepEqual(
+      job.context.answers.map((answer) => [answer.card, answer.choice, answer.text]),
+      [[id, null, text]],
+    );
+    finish(job.run, job.token, { outcome: "failed", error: "临时失败" }, at(now + 65));
+    job = claim("w1", at(now + 130))!;
+    assert.equal(job.context.answers[0].text, text, "retrying must retain the owner's changed requirement");
+    finish(job.run, job.token, { outcome: "done", summary: "只用原片一条，已重新提审" }, at(now + 130));
+    assert.deepEqual([card(id).state, card(id).result], ["done", "只用原片一条，已重新提审"]);
+    ingest("app", note(1, "followup"), at(now + 131));
+    job = claim("w1", at(now + 131))!;
+    assert.equal(job.context.decided.find((decision) => decision.card === id)?.choice, text);
+  });
+}
+
+test("a reply to an old open failure notice recovers its run without changing historical cards", () => {
+  clean();
+  ingest("app", { ...note(1), detail: "旧任务的工作目录与审核意见" }, at(0));
+  const original = claim("w1", at(0))!;
+  started(original.run, original.token, { session: "old-session" }, at(0));
+  finish(original.run, original.token, { outcome: "failed", error: "缺样片" }, at(0));
+  cancel(original.run, at(1));
+  const id = createCard(
+    {
+      key: `run:${original.run}:stopped`,
+      kind: "notice",
+      title: "意见",
+      text: "连续10次失败",
+      rule: "意见",
+      lane: "#1",
+      grp: "notes",
+    },
+    at(1),
+  ).card;
+  assert.equal(card(id).run_id, null, "this is the shape of a notice already stored by the old hub");
+  answer(id, { text: "只用一条原片" }, at(2));
+  const job = claim("w1", at(2))!;
+  assert.equal(job.session, "old-session");
+  assert.equal(job.context.events[0].detail, "旧任务的工作目录与审核意见");
+  assert.equal(job.context.answers[0].text, "只用一条原片");
+});
+
+test("a text note on a notice with no current task only closes it", () => {
+  clean();
+  const id = createCard({ key: "unbound", kind: "notice", title: "接单程序没连上", text: "检查电脑" }, at(0)).card;
+  assert.deepEqual(answer(id, { text: "电脑已开机" }, at(1)), { changed: true, state: "closed" });
+  assert.equal(card(id).answer, "电脑已开机");
+  assert.equal(all("SELECT id FROM events WHERE type = 'card.answered'").length, 0);
+  ingest("app", note(1), at(2));
+  const job = claim("w1", at(2))!;
+  finish(job.run, job.token, { outcome: "done", notice: [{ title: "待处理", text: "原任务" }] }, at(2));
+  const taskNotice = one<{ id: number }>("SELECT id FROM cards WHERE run_id = ?", [job.run])!.id;
+  underRules(
+    (rules) => {
+      rules.rules = rules.rules.filter((rule: { name: string }) => rule.name !== "意见");
+    },
+    () => {
+      assert.deepEqual(answer(taskNotice, { text: "取消这件事" }, at(3)), { changed: true, state: "closed" });
+      assert.equal(card(taskNotice).answer, "取消这件事");
+      assert.equal(all("SELECT id FROM events WHERE type = 'card.answered'").length, 0);
+    },
+  );
+});
+
+test("continuing a notice keeps completed answers as history and does not repeat a completed timer", () => {
+  clean();
+  const first = asked(1);
+  answer(first.id, { text: "已经批准过的旧决定" }, at(1));
+  let job = claim("w1", at(1))!;
+  finish(job.run, job.token, { outcome: "done", notice: [{ title: "下一步", text: "请补充" }] }, at(2));
+  const next = one<{ id: number }>("SELECT id FROM cards WHERE title = ?", ["下一步"])!.id;
+  answer(next, { text: "新的要求" }, at(3));
+  job = claim("w1", at(3))!;
+  assert.deepEqual(
+    job.context.answers.map((answer) => answer.card),
+    [next],
+  );
+  assert.equal(job.context.decided.find((decision) => decision.card === first.id)?.choice, "已经批准过的旧决定");
+  assert.deepEqual(
+    job.context.events.map((event) => event.id),
+    [`card:${next}`],
+  );
+  finish(
+    job.run,
+    job.token,
+    { outcome: "done", later: [{ key: "verify", at: new Date(at(5)).toISOString(), about: "已执行的复查" }] },
+    at(3),
+  );
+  execute("tick", [], at(5));
+  job = claim("w1", at(5))!;
+  assert.equal(job.context.timers[0].about, "已执行的复查");
+  finish(job.run, job.token, { outcome: "done", notice: [{ title: "复查后", text: "请补充" }] }, at(5));
+  const afterTimer = one<{ id: number }>("SELECT id FROM cards WHERE title = ?", ["复查后"])!.id;
+  answer(afterTimer, { text: "继续剩下的业务" }, at(6));
+  job = claim("w1", at(6))!;
+  assert.deepEqual(job.context.timers, []);
+  assert.deepEqual(
+    job.context.events.map((event) => event.id),
+    [`card:${afterTimer}`],
+  );
+});
+
+test("an answer completed while a notice reply waits is history when the continuation is claimed", () => {
+  clean();
+  const first = asked(1);
+  answer(first.id, { text: "先前的决定" }, at(1));
+  let job = claim("w1", at(1))!;
+  finish(
+    job.run,
+    job.token,
+    { outcome: "failed", error: "临时失败", notice: [{ title: "还在处理", text: "请补充" }] },
+    at(2),
+  );
+  const id = one<{ id: number }>("SELECT id FROM cards WHERE title = ?", ["还在处理"])!.id;
+  job = claim("w1", at(8))!;
+  answer(id, { text: "按新的要求继续" }, at(9));
+  finish(job.run, job.token, { outcome: "done", summary: "旧决定已执行" }, at(10));
+  const next = claim("w1", at(10))!;
+  assert.deepEqual(
+    next.context.answers.map((answer) => answer.card),
+    [id],
+  );
+  assert.equal(next.context.decided.find((decision) => decision.card === first.id)?.choice, "先前的决定");
+  assert.deepEqual(
+    next.context.events.map((event) => event.id),
+    [`card:${id}`],
+  );
 });
 
 test("a card solved before it was sent doesn't bother the owner; a closed one already sent is updated", () => {

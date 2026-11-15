@@ -125,10 +125,22 @@ export function cardView(card: Row, env: Environment, ref: string | null = null,
 export function jobOf(view: View, run: Row, env: Environment): Job {
   const rules = configuration(view, run.rules_version);
   const { name, cwd, skill, prompt, emits } = ruleOf(rules, run.rule)!;
-  const events = eventsOf(view, run.id);
+  const events = eventsOf(view, run.id).filter((event) => {
+    // Notice continuations retain original work, but decisions and checks already carried out are history, not new work.
+    if (event.type === "card.answered") {
+      const cards = rows(view, "cards", { answer_event: event.id });
+      return !cards.length || cards.some((card) => card.state === "decided");
+    }
+    if (event.type === "timer.due" && rows(view, "timers", { event_id: event.id }).length) {
+      return !rows(view, "run_events", { event_id: event.id }).some(({ run_id }) =>
+        ["done", "nothing"].includes(view.get("runs", run_id)?.state),
+      );
+    }
+    return true;
+  });
   const eventIds = events.map((event) => event.id);
   const thread = { rule: run.rule, lane: run.lane };
-  const answers = rows(view, "cards", { ...thread, answer_event: eventIds });
+  const answers = rows(view, "cards", { ...thread, answer_event: eventIds, state: "decided" });
   const timers = rows(view, "timers", { ...thread, event_id: eventIds });
   const waiting = rows(view, "timers", { ...thread, event_id: null });
   const decided = ["decided", "done"]

@@ -39,6 +39,7 @@ function origin(card: Card) {
 
 export function render(card: Card) {
   const outcome = outcomeOf(card);
+  const reply = card.kind === "notice" && !!card.rule;
   // Each option is a block across the card, its words wrapping: buttons in a row, one line high, cut long options off.
   const option = (label: string, index: number) => ({
     tag: "interactive_container",
@@ -69,16 +70,22 @@ export function render(card: Card) {
                 rows: 2,
                 auto_resize: true,
                 max_length: 1000,
-                label: { tag: "plain_text", content: "处理说明（可不填）" },
+                ...(reply && { required: true }),
+                label: { tag: "plain_text", content: reply ? "回复任务（填写后会继续处理）" : "处理说明（可不填）" },
                 label_position: "top",
-                placeholder: { tag: "plain_text", content: "比如：已回复他视频下周发；或：群发广告，不用管" },
+                placeholder: {
+                  tag: "plain_text",
+                  content: reply
+                    ? "写下新的要求，Agent 会照这个继续处理"
+                    : "比如：已回复他视频下周发；或：群发广告，不用管",
+                },
               },
               {
                 tag: "button",
                 name: `handling_note_submit_${card.id}`,
                 form_action_type: "submit",
                 type: "primary",
-                text: { tag: "plain_text", content: "记录并结案" },
+                text: { tag: "plain_text", content: reply ? "回复并继续处理" : "记录并结案" },
               },
             ],
           },
@@ -220,7 +227,7 @@ export default async function feishu({ hub, options, log, signal }: ChannelConte
       log(`card ${cardId}: own words sent by ${event.operator_id}, ${answer.changed ? "counted" : "already settled"}`);
       return;
     }
-    // A notice's only option is that it's been handled, so submitting the form picks it.
+    // Older notice forms submit choice 0 with their words; the hub distinguishes a text reply from acknowledgement.
     const choice = Number.isInteger(value?.choice) ? value.choice : form ? 0 : null;
     if (choice === null) return;
     const note = typeof form?.note === "string" ? form.note : undefined;

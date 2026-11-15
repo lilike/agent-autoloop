@@ -7,6 +7,7 @@
 // version before the answer; an open one is sent again with buttons that don't count.
 // A slow CLI call must not block the hub's HTTP loop while looking up a user, sending or updating a card.
 // A U+2028 or U+2029 in what someone typed, which JSON leaves as it is, cuts the click's line and loses the click.
+// A task notice's text form must say it continues the task, rather than promising to merely close a reminder.
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -64,11 +65,17 @@ test("a card shows its options while it's open, and what became of it after", ()
     noticeOpen.includes('"form_action_type":"submit"'),
     "the way a Feishu 2.0 card marks a form's submit button",
   );
+  const taskNotice = said({ ...base, kind: "notice", options: ["已处理"], rule: "意见" });
+  assert.match(taskNotice, /回复并继续处理/);
+  assert.match(taskNotice, /填写后会继续处理/);
+  assert.ok(!taskNotice.includes("记录并结案"));
+  assert.match(taskNotice, /已处理/, "the separate acknowledgement still only closes the notice");
   assert.match(
     said({ ...base, kind: "notice", state: "closed", options: [], result: "已处理", answer: "清了 3GB" }),
     /处理说明：清了 3GB/,
   );
   assert.ok(!said({ ...base, kind: "notice", state: "closed", options: [], result: "已处理" }).includes("处理说明"));
+  assert.match(said({ ...base, kind: "notice", state: "decided", answer: "只用一条原片" }), /已记录，等待处理/);
 });
 
 test("feishu CLI calls leave the HTTP loop available", async () => {

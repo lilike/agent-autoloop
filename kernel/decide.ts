@@ -284,7 +284,7 @@ function sweep(draft: Draft) {
         put(draft, "runs", run.id, { state: "unknown" });
         const agent = configuration(draft.view, run.rules_version).agents[run.agent].name;
         const words = `交给 ${agent} 后超过 5 分钟没有回音，不确定做没做完；后续新任务照常处理。`;
-        notify(draft, `run:${run.id}:unknown`, run.rule, words, threadOf(run));
+        notify(draft, `run:${run.id}:unknown`, run.rule, words, { ...threadOf(run), run: run.id });
       }
     }
     const waiting = waitingOn(draft.view, worker, now);
@@ -341,7 +341,7 @@ function claimNext(draft: Draft, worker: string, claim: string) {
 function stopRun(draft: Draft, run: Row, why: string, summary: string, words: string) {
   put(draft, "runs", run.id, { state: "cancelled", finished_at: draft.at, summary });
   closeStopped(draft, run.id, summary);
-  notify(draft, `run:${run.id}:${why}`, run.rule, words, threadOf(run));
+  notify(draft, `run:${run.id}:${why}`, run.rule, words, { ...threadOf(run), run: run.id });
 }
 
 const ruleGone = (run: Row): [string, string] => [
@@ -389,7 +389,7 @@ function retryLater(draft: Draft, run: Row, result: Result) {
     const clock = { timeZone: draft.rules.timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" } as const;
     const time = new Intl.DateTimeFormat("zh-CN", clock).format(notBefore);
     const words = `连续 3 次自动处理没跑完（卡在：${error}），${time} 会自动再试。`;
-    notify(draft, `run:${id}:failing`, run.rule, words, threadOf(run));
+    notify(draft, `run:${id}:failing`, run.rule, words, { ...threadOf(run), run: id });
   }
   assignQueued(draft, draft.view.get("runs", id)!);
   return rejected;
@@ -478,6 +478,13 @@ function finish(draft: Draft, id: number, token: string, given: unknown) {
   return { rejected };
 }
 
+/** Older hub notices only kept their run in the hub-generated key. Keep open ones answerable without rewriting history. */
+function noticeRun(draft: Draft, card: Row) {
+  const legacy = /^run:([1-9][0-9]*):(?:failing|unknown|stopped|rule-gone)$/.exec(card.key);
+  const run = draft.view.get("runs", card.run_id ?? legacy?.[1] ?? "");
+  return run && run.rule === card.rule && run.lane === card.lane && run.grp === card.grp ? run : null;
+}
+
 function answer(draft: Draft, id: number, given: Row) {
   const card = draft.view.get("cards", id);
   if (!card) throw new NotFound("没有这张卡片");
@@ -498,20 +505,35 @@ function answer(draft: Draft, id: number, given: Row) {
   if (given.text !== undefined && typeof given.text !== "string") throw new InputError(`${words}要是文字`);
   const text = given.text?.trim() || null;
   if (text !== null && [...text].length > ANSWER_TEXT) throw new InputError(`${words}最多 ${ANSWER_TEXT} 字`);
-  if (card.kind === "notice") {
+  const rule = card.rule ? ruleNamed(draft, card.rule) : undefined;
+  if (card.kind === "notice" && (!text || !rule)) {
     closeCard(draft, card, "已处理", given.by ?? null, text);
     return { changed: true, state: "closed" };
   }
-  const optionCount = JSON.parse(card.options).length;
-  const inRange = Number.isInteger(given.choice) && given.choice >= 0 && given.choice < optionCount;
-  if (given.choice === undefined ? !text : !inRange) throw new InputError("没有这个选项");
-  const rule = card.rule ? ruleNamed(draft, card.rule) : undefined;
-  const { lane: subject, title: summary, hops = 0 } = card;
+  if (card.kind === "ask") {
+    const optionCount = JSON.parse(card.options).length;
+    const inRange = Number.isInteger(given.choice) && given.choice >= 0 && given.choice < optionCount;
+    if (given.choice === undefined ? !text : !inRange) throw new InputError("没有这个选项");
+  }
+  const origin = card.kind === "notice" ? noticeRun(draft, card) : null;
+  const { lane: subject, title: summary } = card;
+  const hops = card.hops ?? (origin ? hopsOf(draft, origin) : 0);
   const event = { id: `card:${id}`, type: "card.answered", subject, summary, hops };
-  const eventId = recordEvent(draft, card.source ?? SCHEDULE, event, rule ? [rule.name] : []);
-  const decision = { choice: given.choice ?? null, answer: text, by: given.by ?? null, decided_at: draft.at };
+  const source = card.source ?? (origin ? sourceOf(draft.view, origin.id) : null) ?? SCHEDULE;
+  const eventId = recordEvent(draft, source, event, rule ? [rule.name] : []);
+  const choice = card.kind === "notice" ? null : (given.choice ?? null);
+  const decision = { choice, answer: text, by: given.by ?? null, decided_at: draft.at };
   put(draft, "cards", id, { state: "decided", ...decision, answer_event: eventId, version: card.version + 1 });
-  if (rule) enqueue(draft, rule, eventId, card.lane, card.agent === rule.to ? card.session : null);
+  if (rule) {
+    const agent = card.agent ?? origin?.agent;
+    const session = card.session ?? origin?.session;
+    const run = enqueue(draft, rule, eventId, card.lane, agent === rule.to ? session : null);
+    // A hub notice has no agent-written background. Its continuation needs the original work even in a fresh session.
+    for (const event of origin ? eventsOf(draft.view, origin.id) : []) {
+      const key = `${run}:${event.id}`;
+      if (!draft.view.get("run_events", key)) put(draft, "run_events", key, { run_id: run, event_id: event.id });
+    }
+  }
   return { changed: true, state: "decided" };
 }
 

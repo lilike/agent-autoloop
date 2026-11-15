@@ -9,6 +9,7 @@
 // webhook's secret leaks into anything it returns; the owner's key opens the worker's door; a page other than a card's exists;
 // a card's link still answers or shows the card after its week, or sends you to a command that doesn't work; a link opens
 // when no channel takes links.
+// Text sent from a task notice's form must continue the task, and the form must say that before the user submits it.
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -374,7 +375,7 @@ test("with no channel taking links, a card's link doesn't open", async () => {
   assert.equal((await call(path)).status, 200);
 });
 
-test("a card's link takes words of your own, and a notice takes a line of its own", async () => {
+test("a card's link takes words of your own, and a task notice's text form continues its work", async () => {
   const asked = await linkFor(61, {
     ask: [{ title: "别的想法", text: "选一个", options: ["甲", "乙"], key: "words" }],
   });
@@ -385,11 +386,13 @@ test("a card's link takes words of your own, and a notice takes a line of its ow
   const page = await call(told.path);
   assert.equal(page.text.split("<form").length - 1, 2);
   assert.ok(page.text.includes("已处理"));
-  assert.ok(page.text.includes("记录并结案"), "a notice can be settled with a line of your own");
+  assert.ok(page.text.includes("回复并继续处理"), "the form says that text will continue the task");
+  assert.ok(!page.text.includes("记录并结案"));
   assert.equal((await form(told.path, `text=${encodeURIComponent("清了 3GB 缓存")}`)).status, 303);
-  assert.equal(stored(told.id).state, "closed");
+  assert.equal(stored(told.id).state, "decided");
   assert.equal(stored(told.id).answer, "清了 3GB 缓存", "the line is kept with the card");
   assert.ok((await call(told.path)).text.includes("处理说明：清了 3GB 缓存"));
+  assert.ok((await call(told.path)).text.includes("已记录，等待处理"));
   const silent = await linkFor(63, { notice: [{ title: "又是他", text: "群发广告", key: "ad" }] });
   assert.equal((await form(silent.path, "choice=0")).status, 303);
   assert.deepEqual([stored(silent.id).state, stored(silent.id).answer], ["closed", null]);

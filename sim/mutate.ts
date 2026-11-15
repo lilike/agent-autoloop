@@ -33,8 +33,8 @@ const edits: [string, string, string, string][] = [
   [
     "answer-wakeup",
     "decide.ts",
-    "if (rule) enqueue(draft, rule, eventId, card.lane,",
-    "if (false) enqueue(draft, rule, eventId, card.lane,",
+    "if (rule) {\n    const agent = card.agent ?? origin?.agent;",
+    "if (false && rule) {\n    const agent = card.agent ?? origin?.agent;",
   ],
   ["quiet-delivery", "decide.ts", "if (card.quiet ||", "if (false ||"],
   ["delivery-lease", "decide.ts", "not_before: iso(now + MINUTE)", "not_before: iso(now)"],
